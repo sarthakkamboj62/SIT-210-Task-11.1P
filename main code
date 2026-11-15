@@ -1,0 +1,296 @@
+#include <WiFiNINA.h>
+#include <Wire.h>
+#include <DHT.h>
+#include <BH1750.h>
+
+// -------------------------------
+// WIFI CONFIGURATION
+// -------------------------------
+
+char ssid[] = "1234578";
+char password[] = "12345678";
+
+// Raspberry Pi IP address
+char server[] = "192.168.57.46";
+
+const int serverPort = 5000;
+// -------------------------------
+// SENSOR CONFIGURATION
+// -------------------------------
+
+#define DHT_PIN 2
+#define DHT_TYPE DHT22
+
+#define VIBRATION_PIN 3
+
+#define GREEN_LED 5
+#define RED_LED 6
+
+// Keep HIGH if your previous SW-420
+// test detected vibration correctly.
+#define VIBRATION_ACTIVE_LEVEL HIGH
+
+DHT dht(DHT_PIN, DHT_TYPE);
+BH1750 lightMeter;
+
+WiFiClient client;
+
+// Demo alert thresholds.
+// Adjust these according to your project requirements.
+const float MAX_TEMP = 35.0;
+const float MIN_HUMIDITY = 30.0;
+const float MAX_HUMIDITY = 80.0;
+
+unsigned long previousTime = 0;
+
+const unsigned long interval = 2000;
+
+// -------------------------------
+// WIFI CONNECTION
+// -------------------------------
+
+void connectWiFi() {
+
+  Serial.print("Connecting to WiFi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+
+    WiFi.begin(ssid, password);
+
+    for (int i = 0; i < 10; i++) {
+
+      if (WiFi.status() == WL_CONNECTED) {
+        break;
+      }
+
+      delay(1000);
+      Serial.print(".");
+    }
+  }
+
+  Serial.println();
+  Serial.println("WiFi Connected!");
+
+  Serial.print("Arduino IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// -------------------------------
+// SEND DATA TO RASPBERRY PI
+// -------------------------------
+
+void sendData(float temperature,
+              float humidity,
+              float light,
+              bool vibration,
+              String status) {
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi disconnected!");
+    connectWiFi();
+  }
+
+  String json = "{";
+
+  json += "\"temperature\":" + String(temperature, 2) + ",";
+  json += "\"humidity\":" + String(humidity, 2) + ",";
+  json += "\"light\":" + String(light, 2) + ",";
+  json += "\"vibration\":";
+  json += vibration ? "true" : "false";
+  json += ",";
+  json += "\"status\":\"" + status + "\"";
+
+  json += "}";
+
+  Serial.println();
+  Serial.println("Sending data to Raspberry Pi:");
+  Serial.println(json);
+
+  if (client.connect(server, serverPort)) {
+
+    client.println("POST /api/sensors HTTP/1.1");
+
+    client.print("Host: ");
+    client.println(server);
+
+    client.println("Content-Type: application/json");
+
+    client.print("Content-Length: ");
+    client.println(json.length());
+
+    client.println("Connection: close");
+    client.println();
+
+    client.print(json);
+
+    unsigned long start = millis();
+
+    while (client.connected() &&
+           millis() - start < 3000) {
+
+      while (client.available()) {
+        String response = client.readStringUntil('\n');
+
+        Serial.println(response);
+      }
+    }
+
+    client.stop();
+
+    Serial.println("HTTP request completed.");
+
+  } else {
+
+    Serial.println("Cannot connect to Raspberry Pi!");
+  }
+}
+
+// -------------------------------
+// SETUP
+// -------------------------------
+
+void setup() {
+
+  Serial.begin(9600);
+
+  pinMode(VIBRATION_PIN, INPUT);
+
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+
+  dht.begin();
+
+  Wire.begin();
+
+  if (!lightMeter.begin(
+      BH1750::CONTINUOUS_HIGH_RES_MODE)) {
+
+    Serial.println("BH1750 initialization failed!");
+  } else {
+
+    Serial.println("BH1750 initialized!");
+  }
+
+  delay(2000);
+
+  connectWiFi();
+
+  Serial.println("---------------------------");
+  Serial.println("SMART BEEHIVE SYSTEM");
+  Serial.println("HTTP COMMUNICATION");
+  Serial.println("---------------------------");
+}
+
+// -------------------------------
+// MAIN LOOP
+// -------------------------------
+
+void loop() {
+
+  if (millis() - previousTime >= interval) {
+
+    previousTime = millis();
+
+    // Read DHT22
+    float temperature = dht.readTemperature();
+    float humidity = dht.readHumidity();
+
+    // Read BH1750
+    float light = lightMeter.readLightLevel();
+
+    // Read vibration sensor
+    bool vibration =
+      digitalRead(VIBRATION_PIN) ==
+      VIBRATION_ACTIVE_LEVEL;
+
+    // Check sensor readings
+    bool sensorError =
+      isnan(temperature) ||
+      isnan(humidity) ||
+      isnan(light) ||
+      light < 0;
+
+    String status = "NORMAL";
+
+    if (sensorError) {
+
+      status = "SENSOR ERROR";
+
+    } else if (
+      temperature > MAX_TEMP ||
+      humidity < MIN_HUMIDITY ||
+      humidity > MAX_HUMIDITY ||
+      vibration
+    ) {
+
+      status = "ALERT";
+    }
+
+    // LED control
+    if (status == "NORMAL") {
+
+      digitalWrite(GREEN_LED, HIGH);
+      digitalWrite(RED_LED, LOW);
+
+    } else {
+
+      digitalWrite(GREEN_LED, LOW);
+      digitalWrite(RED_LED, HIGH);
+    }
+
+    // Display readings
+    Serial.println();
+    Serial.println("===== BEEHIVE READINGS =====");
+
+    if (!isnan(temperature)) {
+      Serial.print("Temperature: ");
+      Serial.print(temperature);
+      Serial.println(" C");
+    } else {
+      Serial.println("Temperature: ERROR");
+    }
+
+    if (!isnan(humidity)) {
+      Serial.print("Humidity: ");
+      Serial.print(humidity);
+      Serial.println(" %");
+    } else {
+      Serial.println("Humidity: ERROR");
+    }
+
+    if (!isnan(light) && light >= 0) {
+      Serial.print("Light: ");
+      Serial.print(light);
+      Serial.println(" lux");
+    } else {
+      Serial.println("Light: ERROR");
+    }
+
+    Serial.print("Vibration: ");
+    Serial.println(vibration ? "DETECTED" : "NONE");
+
+    Serial.print("System status: ");
+    Serial.println(status);
+
+    // Send only valid numeric sensor readings.
+    if (!sensorError) {
+
+      sendData(
+        temperature,
+        humidity,
+        light,
+        vibration,
+        status
+      );
+
+    } else {
+
+      Serial.println("Invalid readings - data not sent.");
+    }
+
+    Serial.println("============================");
+  }
+}
